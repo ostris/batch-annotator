@@ -1,0 +1,16 @@
+basicsr
+einops
+numpy
+opencv_python
+timm==0.6.7
+torch
+torchvision
+tqdm
+matplotlib
+prettytable
+omegaconf
+fvcore
+pycocotools
+Pillow==9.5.0
+ftfy
+regex
