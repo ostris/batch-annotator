@@ -262,7 +262,6 @@ def annotate(input_image, args):
     res = args.res
     # clone numpy image
 
-
     img = input_image.copy()
     with torch.no_grad():
         if an == 'canny':
