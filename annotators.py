@@ -1,224 +1,317 @@
 import os
 import sys
 import cv2
+import numpy as np
 import torch
+import importlib
 
 CONTROL_NET_ROOT = os.path.join(os.path.dirname(__file__), 'repositories', 'controlnet')
 sys.path.append(CONTROL_NET_ROOT)
 
 from annotator.util import resize_image, HWC3
 
-annotator_list = [
-    'canny',
-    'hed',
-    'pidi',
-    'mlsd',
-    'midas',
-    'zoe',
-    'normalbae',
-    'openpose',
-    'uniformer',
-    'lineart_anime',
-    'lineart',
-    'oneformer_coco',
-    'oneformer_ade20k',
-    'content_shuffler',
-    'color_shuffler',
-]
-
-model_canny = None
+annotators = []
 
 
-def canny(img, res, l=100, h=200):
-    img = resize_image(HWC3(img), res)
-    global model_canny
-    if model_canny is None:
-        from annotator.canny import CannyDetector
-        model_canny = CannyDetector()
-    result = model_canny(img, l, h)
-    return [result]
+def value_map(x, in_min: float, in_max: float, out_min: float, out_max: float) -> float:
+    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min
 
 
-model_hed = None
+def add_annotators_to_arg_parser(parser):
+    # add arguments for each annotator
+    for annotator in annotators:
+        if annotator.additional_args is not None:
+            for arg in annotator.additional_args:
+                # handle booleans
+                if arg["type"] == bool:
+                    parser.add_argument(f"--{arg['slug']}", action="store_true", help=arg["help"])
+                else:
+                    parser.add_argument(
+                        f"--{arg['slug']}", type=arg['type'], default=arg['default'] if 'default' in arg else None,
+                        help=arg['help'])
 
 
-def hed(img, res):
-    img = resize_image(HWC3(img), res)
-    global model_hed
-    if model_hed is None:
-        from annotator.hed import HEDdetector
-        model_hed = HEDdetector()
-    result = model_hed(img)
-    return [result]
+class Annotator:
+    def __init__(
+            self,
+            name,
+            slug=None,
+            import_path=None,
+            import_class_name=None,
+            additional_args=None,
+            call_override=None
+    ):
+        self.name = name
+        self.slug = slug
+        if self.slug is None:
+            self.slug = self.name
+        self.model = None
+        self.import_path = import_path
+        self.import_class_name = import_class_name
+        self.additional_args = additional_args
+        if self.import_class_name is None and call_override is None:
+            raise ValueError('import_class_name must be specified for Annotator: ' + self.name)
+        if self.import_path is None:
+            self.import_path = 'annotator.' + self.slug
+
+        self.call_override = call_override
+
+    def __call__(self, img, res, *args, **kwargs):
+        if self.call_override is not None:
+            return self.call_override(self, img, res, *args, **kwargs)
+        if self.model is None:
+            self.load()
+        img = resize_image(HWC3(img), res)
+        res = self.model(img, *args, **kwargs)
+        return [res]
+
+    def load(self):
+        module = importlib.import_module(self.import_path)
+        annotator_model = getattr(module, self.import_class_name)
+        self.model = annotator_model()
+
+    def cleanup(self):
+        if self.model is not None:
+            del self.model
+            torch.cuda.empty_cache()
+            self.model = None
 
 
-model_pidi = None
+annotators.append(
+    Annotator(
+        name='Canny',
+        slug='canny',
+        import_path='annotator.canny',
+        import_class_name='CannyDetector',
+        additional_args=[
+            {
+                'slug': 'canny_low_threshold',
+                'keyword': 'low_threshold',
+                'type': int,
+                'default': 100,
+                'help': 'Low threshold for Canny edge detection'
+            },
+            {
+                'slug': 'canny_high_threshold',
+                'keyword': 'high_threshold',
+                'type': int,
+                'default': 200,
+                'help': 'High threshold for Canny edge detection'
+            }
+        ]
+    )
+)
+
+annotators.append(
+    Annotator(
+        name='HED',
+        slug='hed',
+        import_path='annotator.hed',
+        import_class_name='HEDdetector'
+    )
+)
+
+annotators.append(
+    Annotator(
+        name='PIDI',
+        slug='pidi',
+        import_path='annotator.pidinet',
+        import_class_name='PidiNetDetector'
+    )
+)
+
+annotators.append(
+    Annotator(
+        name='MLSD Line Detection',
+        slug='mlsd',
+        import_path='annotator.mlsd',
+        import_class_name='MLSDdetector',
+        additional_args=[
+            {
+                'slug': 'mlsd_score_thr',
+                'keyword': 'thr_v',
+                'type': float,
+                'default': 0.1,
+                'help': 'Threshold for score of line detection'
+            },
+            {
+                'slug': 'mlsd_dist_thr',
+                'keyword': 'thr_d',
+                'type': float,
+                'default': 0.1,
+                'help': 'Threshold for distance of line detection'
+            }
+        ]
+    )
+)
+
+annotators.append(
+    Annotator(
+        name='Midas Depth',
+        slug='midas',
+        import_path='annotator.midas',
+        import_class_name='MidasDetector'
+    )
+)
+
+annotators.append(
+    Annotator(
+        name='Zoe Depth',
+        slug='zoe',
+        import_path='annotator.zoe',
+        import_class_name='ZoeDetector'
+    )
+)
+
+annotators.append(
+    Annotator(
+        name='NormalBae',
+        slug='normalbae',
+        import_path='annotator.normalbae',
+        import_class_name='NormalBaeDetector'
+    )
+)
+
+annotators.append(
+    Annotator(
+        name='OpenPose',
+        slug='openpose',
+        import_path='annotator.openpose',
+        import_class_name='OpenposeDetector',
+        additional_args=[
+            {
+                'slug': 'openpose_hand_and_face',
+                'keyword': 'hand_and_face',
+                'type': bool,
+                'help': 'Whether to detect hand and face'
+            }
+        ]
+    )
+)
+
+annotators.append(
+    Annotator(
+        name='Uniformer',
+        slug='uniformer',
+        import_path='annotator.uniformer',
+        import_class_name='UniformerDetector',
+    )
+)
+
+annotators.append(
+    Annotator(
+        name='Lineart Anime',
+        slug='lineart_anime',
+        import_path='annotator.lineart_anime',
+        import_class_name='LineartAnimeDetector'
+    )
+)
+
+annotators.append(
+    Annotator(
+        name='Lineart',
+        slug='lineart',
+        import_path='annotator.lineart',
+        import_class_name='LineartDetector',
+        additional_args=[
+            {
+                'slug': 'lineart_coarse',
+                'keyword': 'coarse',
+                'type': bool,
+                'help': 'Whether to use coarse model'
+            }
+        ]
+    )
+)
+
+annotators.append(
+    Annotator(
+        name='Oneformer COCO',
+        slug='oneformer_coco',
+        import_path='annotator.oneformer',
+        import_class_name='OneformerCOCODetector'
+    )
+)
+
+annotators.append(
+    Annotator(
+        name='Oneformer ADE20k',
+        slug='oneformer_ade20k',
+        import_path='annotator.oneformer',
+        import_class_name='OneformerADE20kDetector'
+    )
+)
+
+annotators.append(
+    Annotator(
+        name='Content Shuffler',
+        slug='content_shuffler',
+        import_path='annotator.shuffle',
+        import_class_name='ContentShuffleDetector'
+    )
+)
+
+annotators.append(
+    Annotator(
+        name='Color Shuffler',
+        slug='color_shuffler',
+        import_path='annotator.shuffle',
+        import_class_name='ColorShuffleDetector'
+    )
+)
 
 
-def pidi(img, res):
-    img = resize_image(HWC3(img), res)
-    global model_pidi
-    if model_pidi is None:
-        from annotator.pidinet import PidiNetDetector
-        model_pidi = PidiNetDetector()
-    result = model_pidi(img)
-    return [result]
+# Midas min sets the darkest overlay value. Since it scales from 0.0 to 1.0, 0.1 to 0.5 is a good min value
+# To keep the farthest objects visible, we need to adjust the midas values to be higher
+def midas_ade20k(self, img, res, midas_ade20k_min=0.5):
+    # find midas and ade20k
+
+    midas = None
+    oneformer_ade20k = None
+    for annotator in annotators:
+        if annotator.slug == 'midas':
+            midas = annotator
+        if annotator.slug == 'oneformer_ade20k':
+            oneformer_ade20k = annotator
+
+    midas_imd = midas(img, res)[0]
+    ade20k_img = oneformer_ade20k(img, res)[0]
+
+    # expand to 3 channels
+    if midas_imd.ndim == 2:
+        midas_imd = np.expand_dims(midas_imd, axis=-1)
+        # stack
+        midas_imd = np.concatenate([midas_imd, midas_imd, midas_imd], axis=-1)
+
+    # convert to 0 - 1 float
+    midas_img = midas_imd.astype(np.float32) / 255.0
+    ade20k_img = ade20k_img.astype(np.float32) / 255.0
+
+    # adjust midas min value
+    midas_img = value_map(midas_img, 0, 1.0, midas_ade20k_min, 1.0)
+
+    merged = ade20k_img * midas_img
+    merged = np.clip(merged, 0, 1) * 255
+    merged = merged.astype(np.uint8)
+
+    return [merged]
 
 
-model_mlsd = None
-
-
-def mlsd(img, res, thr_v=0.1, thr_d=0.1):
-    img = resize_image(HWC3(img), res)
-    global model_mlsd
-    if model_mlsd is None:
-        from annotator.mlsd import MLSDdetector
-        model_mlsd = MLSDdetector()
-    result = model_mlsd(img, thr_v, thr_d)
-    return [result]
-
-
-model_midas = None
-
-
-def midas(img, res):
-    img = resize_image(HWC3(img), res)
-    global model_midas
-    if model_midas is None:
-        from annotator.midas import MidasDetector
-        model_midas = MidasDetector()
-    result = model_midas(img)
-    return [result]
-
-
-model_zoe = None
-
-
-def zoe(img, res):
-    img = resize_image(HWC3(img), res)
-    global model_zoe
-    if model_zoe is None:
-        from annotator.zoe import ZoeDetector
-        model_zoe = ZoeDetector()
-    result = model_zoe(img)
-    return [result]
-
-
-model_normalbae = None
-
-
-def normalbae(img, res):
-    img = resize_image(HWC3(img), res)
-    global model_normalbae
-    if model_normalbae is None:
-        from annotator.normalbae import NormalBaeDetector
-        model_normalbae = NormalBaeDetector()
-    result = model_normalbae(img)
-    return [result]
-
-
-model_openpose = None
-
-
-def openpose(img, res, hand_and_face=True):
-    img = resize_image(HWC3(img), res)
-    global model_openpose
-    if model_openpose is None:
-        from annotator.openpose import OpenposeDetector
-        model_openpose = OpenposeDetector()
-    result = model_openpose(img, hand_and_face)
-    return [result]
-
-
-model_uniformer = None
-
-
-def uniformer(img, res):
-    img = resize_image(HWC3(img), res)
-    global model_uniformer
-    if model_uniformer is None:
-        from annotator.uniformer import UniformerDetector
-        model_uniformer = UniformerDetector()
-    result = model_uniformer(img)
-    return [result]
-
-
-model_lineart_anime = None
-
-
-def lineart_anime(img, res):
-    img = resize_image(HWC3(img), res)
-    global model_lineart_anime
-    if model_lineart_anime is None:
-        from annotator.lineart_anime import LineartAnimeDetector
-        model_lineart_anime = LineartAnimeDetector()
-    result = model_lineart_anime(img)
-    return [result]
-
-
-model_lineart = None
-
-
-def lineart(img, res, coarse=False):
-    img = resize_image(HWC3(img), res)
-    global model_lineart
-    if model_lineart is None:
-        from annotator.lineart import LineartDetector
-        model_lineart = LineartDetector()
-    result = model_lineart(img, coarse)
-    return [result]
-
-
-model_oneformer_coco = None
-
-
-def oneformer_coco(img, res):
-    img = resize_image(HWC3(img), res)
-    global model_oneformer_coco
-    if model_oneformer_coco is None:
-        from annotator.oneformer import OneformerCOCODetector
-        model_oneformer_coco = OneformerCOCODetector()
-    result = model_oneformer_coco(img)
-    return [result]
-
-
-model_oneformer_ade20k = None
-
-
-def oneformer_ade20k(img, res):
-    img = resize_image(HWC3(img), res)
-    global model_oneformer_ade20k
-    if model_oneformer_ade20k is None:
-        from annotator.oneformer import OneformerADE20kDetector
-        model_oneformer_ade20k = OneformerADE20kDetector()
-    result = model_oneformer_ade20k(img)
-    return [result]
-
-
-model_content_shuffler = None
-
-
-def content_shuffler(img, res):
-    img = resize_image(HWC3(img), res)
-    global model_content_shuffler
-    if model_content_shuffler is None:
-        from annotator.shuffle import ContentShuffleDetector
-        model_content_shuffler = ContentShuffleDetector()
-    result = model_content_shuffler(img)
-    return [result]
-
-
-model_color_shuffler = None
-
-
-def color_shuffler(img, res):
-    img = resize_image(HWC3(img), res)
-    global model_color_shuffler
-    if model_color_shuffler is None:
-        from annotator.shuffle import ColorShuffleDetector
-        model_color_shuffler = ColorShuffleDetector()
-    result = model_color_shuffler(img)
-    return [result]
+annotators.append(
+    Annotator(
+        name='Midas + Oneformer ADE20k',
+        slug='midas_ade20k',
+        additional_args=[
+            {
+                'slug': 'midas_ade20k_min',
+                'type': float,
+                'default': 0.2,
+                'help': 'Minimum value for midas overlay'
+            }
+        ],
+        call_override=midas_ade20k
+    )
+)
 
 
 def post_process(annotated_img, original_image):
@@ -226,78 +319,48 @@ def post_process(annotated_img, original_image):
     # is is list, get the first one
     if isinstance(img, list):
         img = img[0]
-    H, W, _ = original_image.shape
     img = HWC3(img)
-    output_img = cv2.resize(img, (W, H), interpolation=cv2.INTER_LINEAR)
-    # make sure it is rgba
-    if output_img.ndim == 2:
-        output_img = cv2.cvtColor(output_img, cv2.COLOR_GRAY2RGB)
+    h, w, _ = original_image.shape
+    ha, wa, _ = img.shape
+    if h != ha or w != wa:
+        output_img = cv2.resize(img, (w, h), interpolation=cv2.INTER_LINEAR)
+    else:
+        output_img = img
     return output_img
 
 
 def cleanup_annotators():
-    annotator_model_list = [
-        model_hed,
-        model_pidi,
-        model_mlsd,
-        model_midas,
-        model_zoe,
-        model_normalbae,
-        model_openpose,
-        model_uniformer,
-        model_lineart_anime,
-        model_lineart,
-        model_oneformer_coco,
-        model_oneformer_ade20k,
-        model_content_shuffler,
-        model_color_shuffler,
-    ]
-    for model in annotator_model_list:
-        if model is not None:
-            del model
+    for annotator in annotators:
+        annotator.cleanup()
 
 
 def annotate(input_image, args):
-    an = args.annotator
     res = args.res
-    # clone numpy image
 
+    if res == -1:
+        # get resolution
+        orig_h, orig_w, orig_c = input_image.shape
+        res = min(orig_h, orig_w)
+
+    # clone numpy image
     img = input_image.copy()
     with torch.no_grad():
-        if an == 'canny':
-            low_threshold = 100
-            high_threshold = 200
-            out = canny(img, res, low_threshold, high_threshold)
-        elif an == 'hed':
-            out = hed(img, res)
-        elif an == 'pidi':
-            out = pidi(img, res)
-        elif an == 'mlsd':
-            out = mlsd(img, res)
-        elif an == 'midas':
-            out = midas(img, res)
-        elif an == 'zoe':
-            out = zoe(img, res)
-        elif an == 'normalbae':
-            out = normalbae(img, res)
-        elif an == 'openpose':
-            out = openpose(img, res)
-        elif an == 'uniformer':
-            out = uniformer(img, res)
-        elif an == 'lineart_anime':
-            out = lineart_anime(img, res)
-        elif an == 'lineart':
-            out = lineart(img, res)
-        elif an == 'oneformer_coco':
-            out = oneformer_coco(img, res)
-        elif an == 'oneformer_ade20k':
-            out = oneformer_ade20k(img, res)
-        elif an == 'content_shuffler':
-            out = content_shuffler(img, res)
-        elif an == 'color_shuffler':
-            out = color_shuffler(img, res)
-        else:
-            raise ValueError(f'Unknown annotator: {an}')
+        # find the annotator
+        for annotator_model in annotators:
+            if annotator_model.slug == args.annotator:
+                # build additional kwargs
+                kwargs = {}
+                if annotator_model.additional_args is not None:
+                    for arg_dict in annotator_model.additional_args:
+                        keyword = arg_dict['slug']
+                        if 'keyword' in arg_dict:
+                            keyword = arg_dict['keyword']
+                        kwargs[keyword] = getattr(args, arg_dict['slug'])
+                # run the model
+                result = annotator_model(img, res, **kwargs)
+                # post process
+                result = post_process(result, img)
+                return result
 
-    out = post_process(out, input_image)
-    return out
+        # if we made it here, we didn't find the annotator
+        raise Exception(f'Annotator {args.annotator} not found')

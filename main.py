@@ -3,7 +3,7 @@ import os
 import cv2
 import argparse
 from tqdm import tqdm
-from annotators import annotate
+from annotators import add_annotators_to_arg_parser
 
 
 def main():
@@ -12,13 +12,23 @@ def main():
     )
     parser.add_argument("input_dir", help="input directory")
     parser.add_argument("output_dir", help="output directory")
-    parser.add_argument("annotator", type=str, default="c", help="Annotator to use")
-    parser.add_argument("--res", type=int, default=512, help="Resolution to process at")
+    parser.add_argument("annotator", type=str, default="midas", help="Annotator to use")
+    parser.add_argument("--res", type=int, default=512,
+                        help="Resolution to process at. -1 for original size (be careful for large images!)")
+    parser.add_argument("--gpu", type=int, default=0, help="GPU id to use")
+
+    add_annotators_to_arg_parser(parser)
+
     args = parser.parse_args()
+
+    if args.gpu is not None:
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
 
     # make output directory
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir, exist_ok=True)
+
+    from annotators import annotate
 
     img_ext = [".jpg", ".jpeg", ".png", ".webp"]
 
