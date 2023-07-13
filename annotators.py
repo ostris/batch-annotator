@@ -314,6 +314,134 @@ annotators.append(
 )
 
 
+def normalbae_ade20k(self, img, res, normalbae_ade20k_min=0.5):
+    # find midas and ade20k
+
+    oneformer_ade20k = None
+    normalbae = None
+    for annotator in annotators:
+        if annotator.slug == 'normalbae':
+            normalbae = annotator
+        if annotator.slug == 'oneformer_ade20k':
+            oneformer_ade20k = annotator
+
+    normalbae_img = normalbae(img, res)[0]
+    ade20k_img = oneformer_ade20k(img, res)[0]
+
+
+    # convert to 0 - 1 float
+    normalbae_img = normalbae_img.astype(np.float32) / 255.0
+    ade20k_img = ade20k_img.astype(np.float32) / 255.0
+
+    # make it grayscale by averaging the channels
+    if normalbae_img.ndim == 3:
+        normalbae_img = np.mean(normalbae_img, axis=-1, keepdims=True)
+        # stack
+        normalbae_img = np.concatenate([normalbae_img, normalbae_img, normalbae_img], axis=-1)
+
+        # normalize
+        normalbae_img = value_map(normalbae_img, np.min(normalbae_img), np.max(normalbae_img), 0, 1)
+
+    # adjust midas min value
+    normalbae_img = value_map(normalbae_img, 0, 1.0, normalbae_ade20k_min, 1.0)
+
+    merged = ade20k_img * normalbae_img
+    merged = np.clip(merged, 0, 1) * 255
+    merged = merged.astype(np.uint8)
+
+    return [merged]
+
+
+annotators.append(
+    Annotator(
+        name='Normal Bae + Oneformer ADE20k',
+        slug='normalbae_ade20k',
+        additional_args=[
+            {
+                'slug': 'normalbae_ade20k_min',
+                'type': float,
+                'default': 0.2,
+                'help': 'Minimum value for normal bae overlay'
+            }
+        ],
+        call_override=normalbae_ade20k
+    )
+)
+
+
+def kitchen_sink(self, img, res):
+
+    min_midas = 0.2
+    min_normalbae = 0.5
+    min_depth_scale = 0.2
+    # find midas and ade20k
+
+    midas = None
+    normalbae = None
+    oneformer_ade20k = None
+    openpose = None
+    for annotator in annotators:
+        if annotator.slug == 'normalbae':
+            normalbae = annotator
+        if annotator.slug == 'oneformer_ade20k':
+            oneformer_ade20k = annotator
+        if annotator.slug == 'midas':
+            midas = annotator
+        if annotator.slug == 'openpose':
+            openpose = annotator
+
+
+    normalbae_img = normalbae(img, res)[0]
+    ade20k_img = oneformer_ade20k(img, res)[0]
+    midas_img = midas(img, res)[0]
+    openpose_img = openpose(img, res)[0]
+
+
+    # convert to 0 - 1 float
+    normalbae_img = normalbae_img.astype(np.float32) / 255.0
+    ade20k_img = ade20k_img.astype(np.float32) / 255.0
+
+    # make it grayscale by averaging the channels
+    if normalbae_img.ndim == 3:
+        normalbae_img = np.mean(normalbae_img, axis=-1, keepdims=True)
+        # stack
+        normalbae_img = np.concatenate([normalbae_img, normalbae_img, normalbae_img], axis=-1)
+
+    # expand to 3 channels
+    if midas_img.ndim == 2:
+        midas_img = np.expand_dims(midas_img, axis=-1)
+        # stack
+        midas_img = np.concatenate([midas_img, midas_img, midas_img], axis=-1)
+
+    # adjust midas min value
+    normalbae_img = value_map(normalbae_img, np.min(normalbae_img), np.max(normalbae_img), min_normalbae, 1.0)
+
+    # adjust midas min value
+    midas_img = value_map(midas_img, np.min(midas_img), np.max(midas_img), min_midas, 1.0)
+
+    depth_scaler = normalbae_img * midas_img
+
+    # normalize depth scaler
+    depth_scaler = value_map(depth_scaler, np.min(depth_scaler), np.max(depth_scaler), min_depth_scale, 1.0)
+
+    image = ade20k_img + openpose_img
+
+    merged = image * depth_scaler
+    merged = np.clip(merged, 0, 1) * 255
+    merged = merged.astype(np.uint8)
+
+    return [merged]
+
+
+annotators.append(
+    Annotator(
+        name='Kitchen Sink',
+        slug='kitchen_sink',
+        call_override=kitchen_sink
+    )
+)
+
+
 def post_process(annotated_img, original_image):
     img = annotated_img
     # is is list, get the first one
